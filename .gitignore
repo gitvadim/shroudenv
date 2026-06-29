@@ -1,0 +1,50 @@
+# Executables and Binaries
+shroudenv
+shroudenv.exe
+shroudenv-test
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+*.prof
+
+# Go module artifacts
+/vendor/
+
+# Local databases & test vaults
+db.json
+db.json.lock
+*.db
+*.json.lock
+
+# Local Environment variables (just in case)
+.env
+.env.*
+!.env.example
+
+# Node / Frontend dependencies
+frontend/node_modules/
+frontend/dist/
+frontend/.eslintcache
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/.pnpm-debug.log*
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS files
+.DS_Store
+Thumbs.db
