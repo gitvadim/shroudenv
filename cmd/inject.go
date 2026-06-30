@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -72,16 +75,79 @@ injects them into the current process environment, and spawns the given subcomma
 		subCmd.Stdout = os.Stdout
 		subCmd.Stderr = os.Stderr
 
-		if err := subCmd.Run(); err != nil {
+		runErr := runSubprocess(subCmd)
+
+		if runErr != nil {
 			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) {
+			if errors.As(runErr, &exitErr) {
 				os.Exit(exitErr.ExitCode())
 			}
-			return fmt.Errorf("subcommand execution failed: %w", err)
+			return fmt.Errorf("subcommand execution failed: %w", runErr)
 		}
 
 		return nil
 	},
+}
+
+func runSubprocess(subCmd *exec.Cmd) error {
+	// Capture the initial terminal state so we can restore it if the child process
+	// or cmd.exe leaves the terminal in a raw/corrupted state on termination.
+	var oldState *term.State
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		if state, err := term.GetState(int(os.Stdin.Fd())); err == nil {
+			oldState = state
+		}
+	}
+
+	sigChan := make(chan os.Signal, 2) // buffer size 2 to avoid blocking
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	done := make(chan struct{})
+	defer close(done)
+
+	go func() {
+		select {
+		case sig := <-sigChan:
+			// Restore the terminal state immediately on the first signal.
+			// This ensures that if the child process (or cmd.exe) left the terminal
+			// in raw mode, we restore it to cooked mode immediately. This allows cmd.exe's
+			// "Terminate batch job (Y/N)?" prompt to receive input and behave correctly.
+			if oldState != nil {
+				term.Restore(int(os.Stdin.Fd()), oldState)
+			}
+
+			// Forward SIGTERM to the child process.
+			if sig == syscall.SIGTERM && subCmd.Process != nil {
+				if err := subCmd.Process.Signal(syscall.SIGTERM); err != nil {
+					_ = subCmd.Process.Kill()
+				}
+			}
+
+			// If another signal is received, or if the user presses Ctrl+C/sends SIGTERM again,
+			// force exit immediately as an escape hatch.
+			select {
+			case <-sigChan:
+				signal.Stop(sigChan)
+				if subCmd.Process != nil {
+					_ = subCmd.Process.Kill()
+				}
+				os.Exit(130) // 130 is the standard exit code for SIGINT termination
+			case <-done:
+				return
+			}
+		case <-done:
+			return
+		}
+	}()
+
+	runErr := subCmd.Run()
+
+	signal.Stop(sigChan)
+	if oldState != nil {
+		term.Restore(int(os.Stdin.Fd()), oldState)
+	}
+
+	return runErr
 }
 
 func init() {
