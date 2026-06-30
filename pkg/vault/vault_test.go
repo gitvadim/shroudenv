@@ -14,6 +14,7 @@ func init() {
 	// Sandbox the keyring service/account name for all tests to protect host OS credentials.
 	serviceName = "shroudenv-test-sandbox"
 	accountName = "master-key-test-sandbox"
+	keyring.MockInit()
 }
 
 func TestGenerateRandomKey(t *testing.T) {
