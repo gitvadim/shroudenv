@@ -3,6 +3,8 @@
 > **Secure, offline, local-first environment variable and secrets manager for developers.**
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Test and Release](https://github.com/gitvadim/shroudenv/actions/workflows/release.yml/badge.svg)](https://github.com/gitvadim/shroudenv/actions/workflows/release.yml)
+[![Latest Release](https://img.shields.io/github/v/release/gitvadim/shroudenv)](https://github.com/gitvadim/shroudenv/releases)
 
 ![Dashboard Screenshot](./docs/images/shroudenv-screenshot.png)
 
