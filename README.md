@@ -31,7 +31,32 @@ If you are a developer, you probably deal with `.env` files every day. But `.env
 ## 🚀 Quick Start
 
 ### 1. Install
-Download the latest binary from the [Releases](https://github.com/gitvadim/shroudenv/releases) page or build from source.
+
+Choose your preferred package manager to install `shroudenv`:
+
+#### macOS (Homebrew)
+```bash
+brew tap gitvadim/shroudenv
+brew install shroudenv
+```
+
+#### Windows (Scoop)
+```powershell
+scoop bucket add shroudenv https://github.com/gitvadim/scoop-shroudenv.git
+scoop install shroudenv
+```
+
+#### Linux (Direct Download)
+```bash
+# Fetch the latest version tag and download the binary
+TAG=$(curl -s https://api.github.com/repos/gitvadim/shroudenv/releases/latest | grep tag_name | cut -d '"' -f 4)
+curl -sSL "https://github.com/gitvadim/shroudenv/releases/download/${TAG}/shroudenv_${TAG#v}_linux_amd64.tar.gz" | tar -xz
+sudo mv shroudenv /usr/local/bin/
+```
+*(For ARM64, replace `amd64` with `arm64`)*
+
+#### Manual
+You can also download the pre-compiled binary for your system directly from the [Releases](https://github.com/gitvadim/shroudenv/releases) page, or build it from source.
 
 ### 2. Initialize
 Create your secure vault and generate your master key:
