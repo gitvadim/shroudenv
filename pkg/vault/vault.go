@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/zalando/go-keyring"
+	"shroudenv/pkg/keyring"
 	"golang.org/x/crypto/scrypt"
 	"golang.org/x/term"
 )

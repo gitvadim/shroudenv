@@ -3,12 +3,15 @@ package server
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 
+	"shroudenv/pkg/bootstrap"
 	"shroudenv/pkg/db"
 )
 
@@ -111,6 +114,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/projects/{project}/envs", s.handleCreateEnvironment)
 	mux.HandleFunc("GET /api/projects/{project}/envs/{env}/secrets", s.handleGetSecrets)
 	mux.HandleFunc("POST /api/projects/{project}/envs/{env}/secrets", s.handleSetSecrets)
+	mux.HandleFunc("POST /api/bootstrap/parse", s.handleBootstrapParse)
+	mux.HandleFunc("POST /api/bootstrap/validate", s.handleBootstrapValidate)
+	mux.HandleFunc("POST /api/projects/{project}/envs/{env}/bootstrap", s.handleBootstrapCommit)
 
 	// Static assets handler
 	subFS, err := fs.Sub(s.staticFS, "frontend/dist")
@@ -379,4 +385,256 @@ func (s *Server) handleSetSecrets(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"message": "Secrets updated successfully"})
+}
+
+type validationJSON struct {
+	Min          *float64 `json:"min,omitempty"`
+	Max          *float64 `json:"max,omitempty"`
+	Enum         []string `json:"enum,omitempty"`
+	Pattern      string   `json:"pattern,omitempty"`
+	ErrorMessage string   `json:"error_message,omitempty"`
+}
+
+type resolvedVariableJSON struct {
+	Name             string          `json:"name"`
+	Description      string          `json:"description,omitempty"`
+	Type             string          `json:"type,omitempty"`
+	Prompt           string          `json:"prompt,omitempty"`
+	Sensitive        bool            `json:"sensitive,omitempty"`
+	Optional         bool            `json:"optional,omitempty"`
+	Validation       *validationJSON `json:"validation,omitempty"`
+	PreResolvedValue string          `json:"pre_resolved_value"`
+	IsGenerated      bool            `json:"is_generated"`
+}
+
+func (s *Server) handleBootstrapParse(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Yaml string `json:"yaml"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	config, err := bootstrap.ParseConfig([]byte(body.Yaml))
+	if err != nil {
+		http.Error(w, "failed to parse config: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// 1. Generate secrets for generator variables
+	resolved, err := bootstrap.PreResolve(config)
+	if err != nil {
+		http.Error(w, "failed to pre-resolve generators: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Read OS environment variables for fallback checks
+	osEnv := make(map[string]string)
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) == 2 {
+			osEnv[parts[0]] = parts[1]
+		}
+	}
+
+	// Map domain objects to transport-specific serialization JSON structs
+	jsonVars := make([]resolvedVariableJSON, 0, len(config.Variables))
+	for _, v := range config.Variables {
+		var validationPtr *validationJSON
+		if v.Validation != nil {
+			validationPtr = &validationJSON{
+				Min:          v.Validation.Min,
+				Max:          v.Validation.Max,
+				Enum:         v.Validation.Enum,
+				Pattern:      v.Validation.Pattern,
+				ErrorMessage: v.Validation.ErrorMessage,
+			}
+		}
+
+		var preResolvedValue string
+		var isGenerated bool
+
+		if v.Generator != nil {
+			preResolvedValue = resolved[v.Name]
+			isGenerated = true
+		} else {
+			isGenerated = false
+			var val string
+			// Check fallback
+			if v.Fallback != "" {
+				if envVal, exists := osEnv[v.Fallback]; exists && envVal != "" {
+					val = envVal
+				}
+			}
+			// Check default
+			if val == "" && v.Default != nil {
+				defaultStr := fmt.Sprintf("%v", v.Default)
+				interpolated, err := bootstrap.Interpolate(defaultStr, resolved)
+				if err == nil {
+					val = interpolated
+				}
+			}
+			preResolvedValue = val
+			// Add to resolved map so subsequent variables can interpolate it if needed
+			resolved[v.Name] = val
+		}
+
+		jsonVars = append(jsonVars, resolvedVariableJSON{
+			Name:             v.Name,
+			Description:      v.Description,
+			Type:             v.Type,
+			Prompt:           v.Prompt,
+			Sensitive:        v.Sensitive,
+			Optional:         v.Optional,
+			Validation:       validationPtr,
+			PreResolvedValue: preResolvedValue,
+			IsGenerated:      isGenerated,
+		})
+	}
+
+	res := map[string]interface{}{
+		"project":             config.Project,
+		"default_environment": config.DefaultEnvironment,
+		"variables":           jsonVars,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
+}
+
+func (s *Server) handleBootstrapCommit(w http.ResponseWriter, r *http.Request) {
+	projectName := r.PathValue("project")
+	envName := r.PathValue("env")
+
+	var body struct {
+		Secrets map[string]string `json:"secrets"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	flock, err := db.LockExclusive(s.dbPath)
+	if err != nil {
+		http.Error(w, "failed to lock database: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer flock.Unlock()
+
+	database, err := db.LoadDatabase(s.dbPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	p := database.GetProject(projectName)
+	if p != nil {
+		e := p.GetEnvironment(envName)
+		if e != nil {
+			// Decrypt existing secrets to check if they are empty
+			existingSecrets, err := e.GetSecrets(s.masterKey)
+			if err != nil {
+				http.Error(w, "failed to decrypt existing secrets: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if len(existingSecrets) > 0 {
+				http.Error(w, "cannot bootstrap environment: environment is not empty", http.StatusBadRequest)
+				return
+			}
+		}
+	}
+
+	// Auto-create project if missing
+	if p == nil {
+		if err := database.CreateProject(projectName); err != nil {
+			http.Error(w, "failed to create project: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		p = database.GetProject(projectName)
+	}
+
+	// Auto-create environment if missing
+	e := p.GetEnvironment(envName)
+	if e == nil {
+		if err := database.CreateEnvironment(projectName, envName); err != nil {
+			http.Error(w, "failed to create environment: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		e = p.GetEnvironment(envName)
+	}
+
+	// F-03: explicit nil-guard after environment creation
+	if e == nil {
+		http.Error(w, "internal error: environment not found after creation", http.StatusInternalServerError)
+		return
+	}
+
+	if err := e.SetSecrets(body.Secrets, s.masterKey); err != nil {
+		http.Error(w, "failed to encrypt secrets: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := db.SaveDatabase(s.dbPath, database); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"message": "Environment bootstrapped successfully"})
+}
+
+func (s *Server) handleBootstrapValidate(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Yaml   string            `json:"yaml"`
+		Inputs map[string]string `json:"inputs"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	config, err := bootstrap.ParseConfig([]byte(body.Yaml))
+	if err != nil {
+		http.Error(w, "failed to parse config: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Read OS environment variables for fallback checks
+	osEnv := make(map[string]string)
+	for _, env := range os.Environ() {
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) == 2 {
+			osEnv[parts[0]] = parts[1]
+		}
+	}
+
+	// Run validation using bootstrap.Resolve
+	_, err = bootstrap.Resolve(config, body.Inputs, osEnv)
+
+	errorsMap := make(map[string]string)
+	valid := true
+
+	if err != nil {
+		valid = false
+		if valErr, ok := err.(*bootstrap.ValidationErrorMap); ok {
+			for k, vErr := range valErr.Errors {
+				errorsMap[k] = vErr.Error()
+			}
+		} else {
+			// Other general resolution error (e.g. interpolation error)
+			errorsMap["_general"] = err.Error()
+		}
+	}
+
+	res := map[string]interface{}{
+		"valid":  valid,
+		"errors": errorsMap,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
 }

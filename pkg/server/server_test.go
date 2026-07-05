@@ -206,3 +206,244 @@ func TestServerCRUD(t *testing.T) {
 		t.Errorf("expected DB_PASS to be 'super-secret-123', got %s", secrets["DB_PASS"])
 	}
 }
+
+func TestServerBootstrap(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "shroudenv_server_bootstrap_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "db.json")
+	database, _ := db.LoadDatabase(dbPath)
+	db.SaveDatabase(dbPath, database)
+
+	key := make([]byte, 32)
+	token := "testtoken"
+	srv := NewServer(dbPath, key, token, testFS)
+	handler := srv.Handler()
+
+	// 1. Test handleBootstrapParse with valid yaml
+	yamlInput := `
+version: "1"
+project: "testproj"
+default_environment: "development"
+variables:
+  - name: PORT
+    type: integer
+    default: 8080
+  - name: API_KEY
+    generator:
+      type: random_string
+      length: 16
+`
+	reqParseBody := map[string]string{"yaml": yamlInput}
+	reqParseBytes, _ := json.Marshal(reqParseBody)
+	reqParse := httptest.NewRequest("POST", "/api/bootstrap/parse", strings.NewReader(string(reqParseBytes)))
+	reqParse.Host = "localhost"
+	reqParse.Header.Set("Authorization", "Bearer "+token)
+	reqParse.Header.Set("Content-Type", "application/json")
+
+	recParse := httptest.NewRecorder()
+	handler.ServeHTTP(recParse, reqParse)
+	if recParse.Code != http.StatusOK {
+		t.Fatalf("parse failed: code %d, body: %s", recParse.Code, recParse.Body.String())
+	}
+
+	var parseResult map[string]interface{}
+	if err := json.Unmarshal(recParse.Body.Bytes(), &parseResult); err != nil {
+		t.Fatalf("failed to unmarshal parse result: %v", err)
+	}
+
+	if parseResult["project"] != "testproj" {
+		t.Errorf("expected project 'testproj', got %v", parseResult["project"])
+	}
+
+	vars := parseResult["variables"].([]interface{})
+	if len(vars) != 2 {
+		t.Errorf("expected 2 variables, got %d", len(vars))
+	}
+
+	// 2. Test handleBootstrapCommit on empty env
+	reqCommitBody := `{"secrets":{"PORT":"9000","API_KEY":"generatedsecret123"}}`
+	reqCommit := httptest.NewRequest("POST", "/api/projects/testproj/envs/development/bootstrap", strings.NewReader(reqCommitBody))
+	reqCommit.Host = "localhost"
+	reqCommit.Header.Set("Authorization", "Bearer "+token)
+	reqCommit.Header.Set("Content-Type", "application/json")
+
+	recCommit := httptest.NewRecorder()
+	handler.ServeHTTP(recCommit, reqCommit)
+	if recCommit.Code != http.StatusOK {
+		t.Fatalf("commit failed on empty env: code %d, body: %s", recCommit.Code, recCommit.Body.String())
+	}
+
+	// Verify secrets were saved
+	reqGet := httptest.NewRequest("GET", "/api/projects/testproj/envs/development/secrets", nil)
+	reqGet.Host = "localhost"
+	reqGet.Header.Set("Authorization", "Bearer "+token)
+	recGet := httptest.NewRecorder()
+	handler.ServeHTTP(recGet, reqGet)
+	if recGet.Code != http.StatusOK {
+		t.Fatalf("failed to get secrets after bootstrap: code %d", recGet.Code)
+	}
+	var secrets map[string]string
+	json.Unmarshal(recGet.Body.Bytes(), &secrets)
+	if secrets["PORT"] != "9000" || secrets["API_KEY"] != "generatedsecret123" {
+		t.Errorf("unexpected secrets: %v", secrets)
+	}
+
+	// 3. Test handleBootstrapCommit on non-empty env (should fail)
+	reqCommitFail := httptest.NewRequest("POST", "/api/projects/testproj/envs/development/bootstrap", strings.NewReader(reqCommitBody))
+	reqCommitFail.Host = "localhost"
+	reqCommitFail.Header.Set("Authorization", "Bearer "+token)
+	reqCommitFail.Header.Set("Content-Type", "application/json")
+
+	recCommitFail := httptest.NewRecorder()
+	handler.ServeHTTP(recCommitFail, reqCommitFail)
+	if recCommitFail.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request when bootstrapping non-empty env, got %d. Body: %s", recCommitFail.Code, recCommitFail.Body.String())
+	}
+
+	// 4. Test handleBootstrapValidate
+	validateYaml := `
+version: "1"
+project: "valproj"
+variables:
+  - name: DB_HOST
+    type: string
+  - name: PORT
+    type: integer
+    validation:
+      min: 1024
+`
+	t.Run("Validate missing required", func(t *testing.T) {
+		reqBody := map[string]interface{}{
+			"yaml":   validateYaml,
+			"inputs": map[string]string{"PORT": "2000"},
+		}
+		bytes, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest("POST", "/api/bootstrap/validate", strings.NewReader(string(bytes)))
+		req.Host = "localhost"
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+
+		var res struct {
+			Valid  bool              `json:"valid"`
+			Errors map[string]string `json:"errors"`
+		}
+		json.Unmarshal(rec.Body.Bytes(), &res)
+		if res.Valid {
+			t.Error("expected invalid for missing DB_HOST")
+		}
+		if res.Errors["DB_HOST"] == "" {
+			t.Error("expected error message for DB_HOST")
+		}
+	})
+
+	t.Run("Validate type mismatch", func(t *testing.T) {
+		reqBody := map[string]interface{}{
+			"yaml":   validateYaml,
+			"inputs": map[string]string{"DB_HOST": "localhost", "PORT": "abc"},
+		}
+		bytes, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest("POST", "/api/bootstrap/validate", strings.NewReader(string(bytes)))
+		req.Host = "localhost"
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		var res struct {
+			Valid  bool              `json:"valid"`
+			Errors map[string]string `json:"errors"`
+		}
+		json.Unmarshal(rec.Body.Bytes(), &res)
+		if res.Valid {
+			t.Error("expected invalid for non-integer PORT")
+		}
+		if !strings.Contains(res.Errors["PORT"], "invalid integer") {
+			t.Errorf("expected invalid integer error, got: %s", res.Errors["PORT"])
+		}
+	})
+
+	t.Run("Validate range violation", func(t *testing.T) {
+		reqBody := map[string]interface{}{
+			"yaml":   validateYaml,
+			"inputs": map[string]string{"DB_HOST": "localhost", "PORT": "80"},
+		}
+		bytes, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest("POST", "/api/bootstrap/validate", strings.NewReader(string(bytes)))
+		req.Host = "localhost"
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		var res struct {
+			Valid  bool              `json:"valid"`
+			Errors map[string]string `json:"errors"`
+		}
+		json.Unmarshal(rec.Body.Bytes(), &res)
+		if res.Valid {
+			t.Error("expected invalid for PORT < 1024")
+		}
+		if !strings.Contains(res.Errors["PORT"], "value must be at least") {
+			t.Errorf("expected range validation error, got: %s", res.Errors["PORT"])
+		}
+	})
+
+	t.Run("Validate empty required", func(t *testing.T) {
+		reqBody := map[string]interface{}{
+			"yaml":   validateYaml,
+			"inputs": map[string]string{"DB_HOST": "   ", "PORT": "2000"},
+		}
+		bytes, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest("POST", "/api/bootstrap/validate", strings.NewReader(string(bytes)))
+		req.Host = "localhost"
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		var res struct {
+			Valid  bool              `json:"valid"`
+			Errors map[string]string `json:"errors"`
+		}
+		json.Unmarshal(rec.Body.Bytes(), &res)
+		if res.Valid {
+			t.Error("expected invalid for whitespace DB_HOST")
+		}
+		if !strings.Contains(res.Errors["DB_HOST"], "required variable is missing") {
+			t.Errorf("expected required error for DB_HOST, got: %s", res.Errors["DB_HOST"])
+		}
+	})
+
+	t.Run("Validate fully valid", func(t *testing.T) {
+		reqBody := map[string]interface{}{
+			"yaml":   validateYaml,
+			"inputs": map[string]string{"DB_HOST": "localhost", "PORT": "2000"},
+		}
+		bytes, _ := json.Marshal(reqBody)
+		req := httptest.NewRequest("POST", "/api/bootstrap/validate", strings.NewReader(string(bytes)))
+		req.Host = "localhost"
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		var res struct {
+			Valid  bool              `json:"valid"`
+			Errors map[string]string `json:"errors"`
+		}
+		json.Unmarshal(rec.Body.Bytes(), &res)
+		if !res.Valid {
+			t.Errorf("expected valid, got errors: %v", res.Errors)
+		}
+	})
+}

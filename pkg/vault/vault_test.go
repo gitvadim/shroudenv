@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/zalando/go-keyring"
+	"shroudenv/pkg/keyring"
 	"golang.org/x/crypto/scrypt"
 )
 

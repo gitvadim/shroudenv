@@ -178,6 +178,16 @@ Spawns your command, injecting decrypted environment variables directly into the
 ./shroudenv inject -p my-api -e production --non-interactive -- npm run dev
 ```
 
+### 7. Declarative Project Bootstrapping
+Scaffold project variables, validations, and automated secure secrets using a declarative `.shroudenv.yaml` configuration.
+
+```bash
+# Bootstrap variables interactively or via CI
+./shroudenv bootstrap
+```
+
+For a comprehensive guide on variable schemas, custom validation patterns, and secret generators, check out the [Project Bootstrapping Guide](docs/bootstrap.md).
+
 ## 🗺️ Roadmap & Future Features
 
 We are planning to expand `shroudenv` to support team collaboration and enterprise environments.

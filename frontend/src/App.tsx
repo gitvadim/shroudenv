@@ -13,9 +13,11 @@ import {
   Key,
   Activity,
   Check,
-  SearchCode
+  SearchCode,
+  Sparkles
 } from 'lucide-react';
 import './App.css';
+import { BootstrapModal } from './BootstrapModal';
 
 interface Environment {
   name: string;
@@ -61,6 +63,7 @@ function App() {
 
   // .env Import States
   const [showImportModal, setShowImportModal] = useState<boolean>(false);
+  const [showBootstrapModal, setShowBootstrapModal] = useState<boolean>(false);
   const [importTab, setImportTab] = useState<'upload' | 'paste'>('upload');
   const [importText, setImportText] = useState<string>('');
   const [dragActive, setDragActive] = useState<boolean>(false);
@@ -740,6 +743,15 @@ function App() {
                     <FolderPlus size={16} /> Import .env
                   </button>
                   <button
+                    className="btn btn-secondary"
+                    onClick={() => setShowBootstrapModal(true)}
+                    id="btn-bootstrap"
+                    disabled={Object.keys(secrets).length > 0}
+                    title={Object.keys(secrets).length > 0 ? "Bootstrapping is only allowed on empty environments" : "Bootstrap from .shroudenv.yaml"}
+                  >
+                    <Sparkles size={16} /> Bootstrap
+                  </button>
+                  <button
                     className="btn btn-primary"
                     onClick={openAddModal}
                     id="btn-add-secret"
@@ -1104,6 +1116,20 @@ function App() {
           </div>
         </div>
       )}
+
+      <BootstrapModal
+        isOpen={showBootstrapModal}
+        onClose={() => setShowBootstrapModal(false)}
+        projectName={selectedProject}
+        envName={selectedEnv}
+        token={token}
+        onSuccess={() => {
+          setShowBootstrapModal(false);
+          setSuccessMsg('Environment bootstrapped successfully.');
+          fetchSecrets();
+          fetchStatusAndProjects();
+        }}
+      />
     </div>
   );
 }

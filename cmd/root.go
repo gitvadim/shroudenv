@@ -39,6 +39,7 @@ func init() {
 	RootCmd.PersistentFlags().BoolVar(&nonInteractiveFlag, "non-interactive", false, "Run in non-interactive mode (no prompt fallbacks)")
 	// Support --ci as an alias for non-interactive
 	RootCmd.PersistentFlags().BoolVar(&nonInteractiveFlag, "ci", false, "Run in non-interactive mode (no prompt fallbacks)")
+	_ = RootCmd.PersistentFlags().MarkHidden("ci")
 }
 
 // GetDBPath resolves the database file path.

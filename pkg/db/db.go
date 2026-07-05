@@ -160,12 +160,9 @@ func LoadDatabase(path string) (*Database, error) {
 		return nil, err
 	}
 
-	// Double check salt exists, if not generate one (fallback for older DBs if any)
+	// Double check salt exists, if not return error (prevents silently regenerating salt on corrupted files)
 	if db.Salt == "" {
-		saltBytes := make([]byte, 16)
-		if _, err := io.ReadFull(rand.Reader, saltBytes); err == nil {
-			db.Salt = hex.EncodeToString(saltBytes)
-		}
+		return nil, errors.New("database file is missing the salt field; the database may be corrupt")
 	}
 
 	return &db, nil
@@ -183,8 +180,36 @@ func SaveDatabase(path string, db *Database) error {
 		return err
 	}
 
-	return os.WriteFile(path, fileBytes, 0600)
+	// Write to temporary file in the same directory to ensure atomic rename
+	tmpFile, err := os.CreateTemp(dir, "db-*.json.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmpFile.Name()
+	defer func() {
+		// Clean up the temp file if rename was not successful
+		_ = os.Remove(tmpName)
+	}()
+
+	if err := tmpFile.Chmod(0600); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+
+	if _, err := tmpFile.Write(fileBytes); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+
+	// Atomic rename (cross-platform helper to handle Windows replacement)
+	return renameWrap(tmpName, path)
 }
+
+
 
 // LockFile represents a file lock on the database.
 type LockFile struct {
