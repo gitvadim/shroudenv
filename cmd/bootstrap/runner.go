@@ -18,14 +18,13 @@ type InputReader interface {
 }
 
 type BootstrapRunner struct {
-	EnvVars        map[string]string
-	Stdout         io.Writer
-	Stderr         io.Writer
-	InputReader    InputReader
-	DBPath         string
-	MasterKey      []byte
-	DryRun         bool
-	NonInteractive bool
+	EnvVars     map[string]string
+	Stdout      io.Writer
+	Stderr      io.Writer
+	InputReader InputReader
+	DBPath      string
+	MasterKey   []byte
+	DryRun      bool
 }
 
 // Run executes the bootstrapping configuration logic.
@@ -75,134 +74,106 @@ func (r *BootstrapRunner) Run(configPath string, envOverride string) error {
 	resolved := make(map[string]string)
 	totalVars := len(config.Variables)
 
-	// 3. Resolve base configuration (pre-resolve or resolve)
-	if r.NonInteractive {
-		// Non-interactive flow
-		resolved, err = pkgbootstrap.Resolve(config, nil, r.EnvVars)
-		if err != nil {
-			if valErr, ok := err.(*pkgbootstrap.ValidationErrorMap); ok {
-				fmt.Fprintln(r.Stderr, "❌ Validation failed in non-interactive mode:")
-				for name, e := range valErr.Errors {
-					fmt.Fprintf(r.Stderr, "  - %s: %v\n", name, e)
-				}
-				return fmt.Errorf("scaffolding aborted due to validation errors")
-			}
-			return err
+	// 3. Resolve base configuration (pre-resolve)
+	preResolved, err := pkgbootstrap.PreResolve(config)
+	if err != nil {
+		return err
+	}
+	for k, v := range preResolved {
+		resolved[k] = v
+	}
+
+	// 4. Prompt user for variables
+	for i, v := range config.Variables {
+		if v.Generator != nil {
+			fmt.Fprintf(r.Stdout, "[%d/%d] Generative secret: %s\n", i+1, totalVars, v.Name)
+			r.describeGeneratorResult(v, resolved[v.Name])
+			fmt.Fprintln(r.Stdout)
+			continue
 		}
 
-		// Print resolved secrets
-		for i, v := range config.Variables {
-			if v.Generator != nil {
-				fmt.Fprintf(r.Stdout, "[%d/%d] Generative secret: %s\n", i+1, totalVars, v.Name)
-				r.describeGeneratorResult(v, resolved[v.Name])
+		fmt.Fprintf(r.Stdout, "[%d/%d] %s (%s)\n", i+1, totalVars, v.Name, v.Description)
+
+		// Determine default value
+		var defaultValue string
+		if v.Fallback != "" {
+			if envVal, exists := r.EnvVars[v.Fallback]; exists && envVal != "" {
+				fmt.Fprintf(r.Stdout, "  ↳ Found shell environment fallback $%s: %q\n", v.Fallback, envVal)
+				defaultValue = envVal
+			}
+		}
+		if defaultValue == "" && v.Default != nil {
+			defaultStr := fmt.Sprintf("%v", v.Default)
+			interpolated, err := pkgbootstrap.Interpolate(defaultStr, resolved)
+			if err == nil {
+				defaultValue = interpolated
+			}
+		}
+
+		// Format prompt details
+		promptText := v.Prompt
+		if promptText == "" {
+			promptText = "Enter value"
+		}
+
+		var promptDetails []string
+		if defaultValue != "" {
+			if v.Sensitive {
+				promptDetails = append(promptDetails, "default: <masked>")
 			} else {
-				if _, exists := resolved[v.Name]; exists {
-					fmt.Fprintf(r.Stdout, "[%d/%d] Resolved: %s\n", i+1, totalVars, v.Name)
-				}
+				promptDetails = append(promptDetails, fmt.Sprintf("default: %s", defaultValue))
 			}
+		} else if v.Optional {
+			promptDetails = append(promptDetails, "optional, Enter to skip")
 		}
-	} else {
-		// Interactive prompting flow
-		preResolved, err := pkgbootstrap.PreResolve(config)
-		if err != nil {
-			return err
-		}
-		for k, v := range preResolved {
-			resolved[k] = v
+		if v.Validation != nil && len(v.Validation.Enum) > 0 {
+			promptDetails = append(promptDetails, fmt.Sprintf("options: %s", strings.Join(v.Validation.Enum, ", ")))
 		}
 
-		// 4. Prompt user for variables
-		for i, v := range config.Variables {
-			if v.Generator != nil {
-				fmt.Fprintf(r.Stdout, "[%d/%d] Generative secret: %s\n", i+1, totalVars, v.Name)
-				r.describeGeneratorResult(v, resolved[v.Name])
-				fmt.Fprintln(r.Stdout)
+		fullPrompt := "  ↳ " + promptText
+		if len(promptDetails) > 0 {
+			fullPrompt = fmt.Sprintf("%s [%s]", fullPrompt, strings.Join(promptDetails, ", "))
+		}
+		fullPrompt = fullPrompt + ": "
+
+		// Prompt loop with validation
+		for {
+			var userInput string
+			var promptErr error
+
+			if v.Sensitive {
+				userInput, promptErr = r.InputReader.ReadSensitiveInput(fullPrompt)
+			} else {
+				userInput, promptErr = r.InputReader.ReadInput(fullPrompt)
+			}
+
+			if promptErr != nil {
+				return fmt.Errorf("failed to read user input: %w", promptErr)
+			}
+
+			if userInput == "" {
+				userInput = defaultValue
+			}
+
+			if userInput == "" && v.Optional {
+				break
+			}
+
+			// F-04: Non-optional, non-default interactive empty-value check
+			if userInput == "" && !v.Optional {
+				fmt.Fprintln(r.Stdout, "  ❌ This field is required.")
 				continue
 			}
 
-			fmt.Fprintf(r.Stdout, "[%d/%d] %s (%s)\n", i+1, totalVars, v.Name, v.Description)
-
-			// Determine default value
-			var defaultValue string
-			if v.Fallback != "" {
-				if envVal, exists := r.EnvVars[v.Fallback]; exists && envVal != "" {
-					fmt.Fprintf(r.Stdout, "  ↳ Found shell environment fallback $%s: %q\n", v.Fallback, envVal)
-					defaultValue = envVal
-				}
-			}
-			if defaultValue == "" && v.Default != nil {
-				defaultStr := fmt.Sprintf("%v", v.Default)
-				interpolated, err := pkgbootstrap.Interpolate(defaultStr, resolved)
-				if err == nil {
-					defaultValue = interpolated
-				}
+			if valErr := pkgbootstrap.Validate(userInput, v); valErr != nil {
+				fmt.Fprintf(r.Stdout, "  ❌ %v\n", valErr)
+				continue
 			}
 
-			// Format prompt details
-			promptText := v.Prompt
-			if promptText == "" {
-				promptText = "Enter value"
-			}
-
-			var promptDetails []string
-			if defaultValue != "" {
-				if v.Sensitive {
-					promptDetails = append(promptDetails, "default: <masked>")
-				} else {
-					promptDetails = append(promptDetails, fmt.Sprintf("default: %s", defaultValue))
-				}
-			} else if v.Optional {
-				promptDetails = append(promptDetails, "optional, Enter to skip")
-			}
-			if v.Validation != nil && len(v.Validation.Enum) > 0 {
-				promptDetails = append(promptDetails, fmt.Sprintf("options: %s", strings.Join(v.Validation.Enum, ", ")))
-			}
-
-			fullPrompt := "  ↳ " + promptText
-			if len(promptDetails) > 0 {
-				fullPrompt = fmt.Sprintf("%s [%s]", fullPrompt, strings.Join(promptDetails, ", "))
-			}
-			fullPrompt = fullPrompt + ": "
-
-			// Prompt loop with validation
-			for {
-				var userInput string
-				var promptErr error
-
-				if v.Sensitive {
-					userInput, promptErr = r.InputReader.ReadSensitiveInput(fullPrompt)
-				} else {
-					userInput, promptErr = r.InputReader.ReadInput(fullPrompt)
-				}
-
-				if promptErr != nil {
-					return fmt.Errorf("failed to read user input: %w", promptErr)
-				}
-
-				if userInput == "" {
-					userInput = defaultValue
-				}
-
-				if userInput == "" && v.Optional {
-					break
-				}
-
-				// F-04: Non-optional, non-default interactive empty-value check
-				if userInput == "" && !v.Optional {
-					fmt.Fprintln(r.Stdout, "  ❌ This field is required.")
-					continue
-				}
-
-				if valErr := pkgbootstrap.Validate(userInput, v); valErr != nil {
-					fmt.Fprintf(r.Stdout, "  ❌ %v\n", valErr)
-					continue
-				}
-
-				resolved[v.Name] = userInput
-				break
-			}
-			fmt.Fprintln(r.Stdout)
+			resolved[v.Name] = userInput
+			break
 		}
+		fmt.Fprintln(r.Stdout)
 	}
 
 	// 5. Commit Secrets

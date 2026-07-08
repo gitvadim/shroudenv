@@ -34,7 +34,7 @@ var initCmd = &cobra.Command{
 		}
 
 		// Check if we can already load a key from keyring
-		existingKey, err := vault.GetMasterKey(nil, true)
+		existingKey, err := vault.GetMasterKeyFromKeyring()
 		hasKey := (err == nil && len(existingKey) == 32)
 
 		if hasKey && dbExists && !forceFlag {
@@ -72,7 +72,7 @@ var initCmd = &cobra.Command{
 			err = vault.SetMasterKey(key)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "WARNING: Failed to store master key in OS vault: %v\n", err)
-				fmt.Fprintf(os.Stderr, "You will need to supply SHROUDENV_MASTER_KEY environment variable or enter password interactively.\n")
+				fmt.Fprintf(os.Stderr, "You will need to enter your master password interactively when unlocking the vault.\n")
 				fmt.Printf("Generated Master Key (Hex): %s\n", hex.EncodeToString(key))
 			} else {
 				fmt.Println("Master key securely stored in OS Keyring.")

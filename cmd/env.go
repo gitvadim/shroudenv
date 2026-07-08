@@ -8,6 +8,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	envCmdProjFlag string
+	envCmdNameFlag string
+)
+
 var envCmd = &cobra.Command{
 	Use:   "env",
 	Short: "Manage environments",
@@ -15,12 +20,12 @@ var envCmd = &cobra.Command{
 }
 
 var envCreateCmd = &cobra.Command{
-	Use:   "create <project> <env>",
+	Use:   "create -p <project> -e <env>",
 	Short: "Create a new environment in a project",
-	Args:  cobra.ExactArgs(2),
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		projectName := args[0]
-		envName := args[1]
+		projectName := envCmdProjFlag
+		envName := envCmdNameFlag
 
 		database, path, _, lock, err := LoadDBAndKeyExclusive()
 		if err != nil {
@@ -44,18 +49,17 @@ var envCreateCmd = &cobra.Command{
 }
 
 var envListCmd = &cobra.Command{
-	Use:   "list <project>",
+	Use:   "list -p <project>",
 	Short: "List all environments in a project",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		projectName := args[0]
+		projectName := envCmdProjFlag
 
 		database, _, _, lock, err := LoadDBAndKeyShared()
 		if err != nil {
 			return err
 		}
 		defer lock.Unlock()
-
 
 		p := database.GetProject(projectName)
 		if p == nil {
@@ -80,7 +84,15 @@ var envListCmd = &cobra.Command{
 }
 
 func init() {
+	envCmd.PersistentFlags().StringVarP(&envCmdProjFlag, "project", "p", "", "Project name")
+	envCmd.PersistentFlags().StringVarP(&envCmdNameFlag, "env", "e", "", "Environment name")
+
 	envCmd.AddCommand(envCreateCmd)
 	envCmd.AddCommand(envListCmd)
+
+	_ = envCreateCmd.MarkFlagRequired("project")
+	_ = envCreateCmd.MarkFlagRequired("env")
+	_ = envListCmd.MarkFlagRequired("project")
+
 	RootCmd.AddCommand(envCmd)
 }

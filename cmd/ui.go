@@ -83,11 +83,7 @@ var uiCmd = &cobra.Command{
 }
 
 func getVaultStatus(d *db.Database) string {
-	// A helper to show where the key came from, or environment variable, etc.
-	if os.Getenv("SHROUDENV_MASTER_KEY") != "" {
-		return "Environment Variable"
-	}
-	return "OS Keyring/Vault"
+	return "Secure Local Vault"
 }
 
 func openBrowser(url string) {

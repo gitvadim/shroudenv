@@ -86,10 +86,10 @@ Start the local server and open the modern GUI dashboard:
 
 * **Vault-Backed Master Key:** Generates a secure random 256-bit master key stored directly in your OS credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service).
 * **AES-256-GCM Cryptography:** Secrets are encrypted on disk in `~/.shroudenv/db.json` using AES-256-GCM. Metadata (project names, environments) remains plain-text for indexing.
-* **Headless Fallbacks:** In non-interactive contexts (like Docker or CI), falls back to `SHROUDENV_MASTER_KEY` env var or prompts for a master password derived via `scrypt`.
+* **Master Password Fallback:** If the master key is not found in the OS keyring, `shroudenv` prompts the user for their master password in the terminal, deriving the key securely via `scrypt` and the database salt.
 * **Host Header Validation (DNS Rebinding Protection):** The API server binds strictly to `localhost` / `127.0.0.1` and blocks any request with an external Host header (returns `403 Forbidden`).
 * **Session Token Authentication:** Local dashboard communication is protected by a secure 32-character token generated on server startup.
-* **Automated Secret Harvesting Protections (TTY Enforcement):** `secret list` and `inject` commands fail-securely if standard output/input is redirected or piped. A `--non-interactive` flag or `SHROUDENV_NON_INTERACTIVE=true` must be supplied for automation.
+* **Strict Interactive Enforcement (TTY Enforcement):** `secret list` and `inject` commands fail-securely if standard output/input is redirected or piped, ensuring secrets are only accessed in an active interactive terminal session.
 
 ---
 
@@ -145,7 +145,7 @@ Launches the local net/http server, prints the URL with the secure access token,
 Create and list secure project spaces.
 ```bash
 # Create a project
-./shroudenv project create my-api
+./shroudenv project create -p my-api
 
 # List projects
 ./shroudenv project list
@@ -155,34 +155,44 @@ Create and list secure project spaces.
 Create and list environment profiles inside a project.
 ```bash
 # Create environment
-./shroudenv env create my-api production
+./shroudenv env create -p my-api -e production
 
 # List environments
-./shroudenv env list my-api
+./shroudenv env list -p my-api
 ```
 
 ### 5. Secrets Management
-Configure and list credentials.
+Configure, list, and inspect credentials.
 ```bash
 # Set a secret key/value
-./shroudenv secret set my-api production DATABASE_URL "postgres://user:pass@localhost/db"
+./shroudenv secret set -p my-api -e production DATABASE_URL "postgres://user:pass@localhost/db"
 
-# List secrets (displays in KEY=VALUE format; requires TTY or override)
-./shroudenv secret list my-api production --non-interactive
+# List secrets (outputs keys with masked values; requires active TTY)
+./shroudenv secret list -p my-api -e production
+# Output:
+# Secrets in my-api/production:
+# DATABASE_URL=pos...********
+
+# Inspect a specific secret in plaintext (requires active TTY)
+./shroudenv secret inspect -p my-api -e production DATABASE_URL
+# Output:
+# postgres://user:pass@localhost/db
 ```
+
+
 
 ### 6. Subprocess Injection
 Spawns your command, injecting decrypted environment variables directly into the child process. This means your secrets stay in memory and never touch a `.env` file on disk.
 
 ```bash
-./shroudenv inject -p my-api -e production --non-interactive -- npm run dev
+./shroudenv inject -p my-api -e production -- npm run dev
 ```
 
 ### 7. Declarative Project Bootstrapping
 Scaffold project variables, validations, and automated secure secrets using a declarative `.shroudenv.yaml` configuration.
 
 ```bash
-# Bootstrap variables interactively or via CI
+# Bootstrap variables interactively
 ./shroudenv bootstrap
 ```
 

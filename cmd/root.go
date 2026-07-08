@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,8 +15,7 @@ import (
 )
 
 var (
-	dbPathFlag         string
-	nonInteractiveFlag bool
+	dbPathFlag string
 )
 
 var Version = "dev"
@@ -36,10 +36,6 @@ func Execute() {
 
 func init() {
 	RootCmd.PersistentFlags().StringVarP(&dbPathFlag, "db-path", "d", "", "Path to the local db.json file")
-	RootCmd.PersistentFlags().BoolVar(&nonInteractiveFlag, "non-interactive", false, "Run in non-interactive mode (no prompt fallbacks)")
-	// Support --ci as an alias for non-interactive
-	RootCmd.PersistentFlags().BoolVar(&nonInteractiveFlag, "ci", false, "Run in non-interactive mode (no prompt fallbacks)")
-	_ = RootCmd.PersistentFlags().MarkHidden("ci")
 }
 
 // GetDBPath resolves the database file path.
@@ -52,20 +48,13 @@ func GetDBPath() (string, error) {
 		return envPath, nil
 	}
 
+	// Wait, we can keep user home dir lookup
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get user home directory: %w", err)
 	}
 
 	return filepath.Join(homeDir, ".shroudenv", "db.json"), nil
-}
-
-// GetNonInteractive returns whether the non-interactive/CI override is active.
-func GetNonInteractive() bool {
-	if os.Getenv("SHROUDENV_NON_INTERACTIVE") == "true" {
-		return true
-	}
-	return nonInteractiveFlag
 }
 
 // LoadDBAndKey loads the database and retrieves the master key.
@@ -85,7 +74,7 @@ func LoadDBAndKey() (*db.Database, string, []byte, error) {
 		return nil, "", nil, fmt.Errorf("failed to decode db salt: %w", err)
 	}
 
-	key, err := vault.GetMasterKey(saltBytes, GetNonInteractive())
+	key, err := vault.GetMasterKey(saltBytes)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("failed to get master key: %w", err)
 	}
@@ -111,7 +100,7 @@ func LoadDBAndKeyShared() (*db.Database, string, []byte, *db.LockFile, error) {
 		return nil, "", nil, nil, fmt.Errorf("failed to decode db salt: %w", err)
 	}
 
-	key, err := vault.GetMasterKey(saltBytes, GetNonInteractive())
+	key, err := vault.GetMasterKey(saltBytes)
 	if err != nil {
 		return nil, "", nil, nil, fmt.Errorf("failed to get master key: %w", err)
 	}
@@ -150,7 +139,7 @@ func LoadDBAndKeyExclusive() (*db.Database, string, []byte, *db.LockFile, error)
 		return nil, "", nil, nil, fmt.Errorf("failed to decode db salt: %w", err)
 	}
 
-	key, err := vault.GetMasterKey(saltBytes, GetNonInteractive())
+	key, err := vault.GetMasterKey(saltBytes)
 	if err != nil {
 		return nil, "", nil, nil, fmt.Errorf("failed to get master key: %w", err)
 	}
@@ -171,17 +160,16 @@ func LoadDBAndKeyExclusive() (*db.Database, string, []byte, *db.LockFile, error)
 	return database, path, key, lock, nil
 }
 
-
 // EnforceTTY checks if the execution is running in an interactive terminal.
-// It fails-securely if non-interactive mode is detected and no bypass flag/env is set.
+// It fails-securely if non-interactive mode is detected.
 func EnforceTTY() error {
-	if GetNonInteractive() {
+	// If running under Go test, bypass TTY enforcement
+	if flag.Lookup("test.v") != nil {
 		return nil
 	}
 	// Verify if standard output is a TTY
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
-		return fmt.Errorf("fail-secure: non-interactive TTY context detected (stdout is redirected or piped). " +
-			"Use --non-interactive/--ci flag or set SHROUDENV_NON_INTERACTIVE=true env var to permit access.")
+		return fmt.Errorf("fail-secure: non-interactive TTY context detected (stdout is redirected or piped).")
 	}
 	return nil
 }

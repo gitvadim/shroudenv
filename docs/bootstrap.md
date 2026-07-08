@@ -143,17 +143,4 @@ Run your application using the `shroudenv inject` command. Your application will
 shroudenv inject -p my-app -e development -- npm run start
 ```
 
----
 
-## 🤖 CI / CD & Non-Interactive Automation
-
-In automated pipelines (such as Docker builds, GitHub Actions, or staging scripts) where terminal prompts are unavailable, use non-interactive mode:
-
-```bash
-shroudenv bootstrap --non-interactive
-```
-
-### Rules for Non-Interactive Mode
-1. **Fallback Variables:** Make sure any variables without defaults are declared in your pipeline environments, and that the `.shroudenv.yaml` schema references them using the `fallback` field.
-2. **Missing Credentials:** If the bootstrap process encounters a required variable that has no default value and no fallback environment variable present, it will immediately fail-securely and abort the setup rather than blocking or prompting.
-3. **Redirection Safety:** In piped/headless environments where stdout is not a TTY, the bootstrap command enforces `--non-interactive` (or `--ci`). If it detects a headless run without either bypass flag, it will fail-securely to prevent automated secret exposure.

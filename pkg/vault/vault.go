@@ -36,42 +36,33 @@ func SetMasterKey(key []byte) error {
 	return keyring.Set(serviceName, accountName, hexKey)
 }
 
+// GetMasterKeyFromKeyring retrieves the master key from the OS keyring/vault.
+// It returns an error if the key is not found or is invalid.
+func GetMasterKeyFromKeyring() ([]byte, error) {
+	hexKey, err := keyring.Get(serviceName, accountName)
+	if err != nil {
+		return nil, err
+	}
+	key, err := hex.DecodeString(hexKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode master key from keyring: %w", err)
+	}
+	if len(key) != 32 {
+		return nil, errors.New("master key in keyring must be exactly 32 bytes")
+	}
+	return key, nil
+}
+
 // GetMasterKey attempts to retrieve the master key in this order:
-// 1. SHROUDENV_MASTER_KEY environment variable
-// 2. OS Keyring
-// 3. Interactive terminal prompt (unless nonInteractive is true) using scrypt and the provided salt.
-func GetMasterKey(salt []byte, nonInteractive bool) ([]byte, error) {
-	// 1. Try Environment Variable
-	if envVal := os.Getenv("SHROUDENV_MASTER_KEY"); envVal != "" {
-		// If it's a 64-char hex string, decode it
-		if len(envVal) == 64 {
-			if key, err := hex.DecodeString(envVal); err == nil && len(key) == 32 {
-				return key, nil
-			}
-		}
-		// Otherwise, derive a 32-byte key from the environment variable using scrypt and salt
-		if len(salt) == 0 {
-			return nil, errors.New("cannot derive master key from password without database salt")
-		}
-		key, err := scrypt.Key([]byte(envVal), salt, 32768, 8, 1, 32)
-		if err != nil {
-			return nil, fmt.Errorf("failed to derive key using scrypt: %w", err)
-		}
+// 1. OS Keyring/Vault
+// 2. Interactive terminal prompt using scrypt and the provided salt.
+func GetMasterKey(salt []byte) ([]byte, error) {
+	// 1. Try OS Keyring
+	if key, err := GetMasterKeyFromKeyring(); err == nil {
 		return key, nil
 	}
 
-	// 2. Try OS Keyring
-	if hexKey, err := keyring.Get(serviceName, accountName); err == nil {
-		if key, err := hex.DecodeString(hexKey); err == nil && len(key) == 32 {
-			return key, nil
-		}
-	}
-
-	// 3. Try Interactive Prompt
-	if nonInteractive {
-		return nil, errors.New("master key not found (keyring empty, env var absent, and running in non-interactive mode)")
-	}
-
+	// 2. Try Interactive Prompt
 	// Check if stdin is a terminal
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return nil, errors.New("master key not found and stdin is not a terminal (cannot prompt for password)")

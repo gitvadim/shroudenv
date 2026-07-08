@@ -49,7 +49,6 @@ var bootstrapCmd = &cobra.Command{
 			DBPath:         dbPath,
 			MasterKey:      key,
 			DryRun:         bootstrapDryRunFlag,
-			NonInteractive: GetNonInteractive(),
 		}
 
 		return runner.Run(bootstrapFileFlag, bootstrapEnvFlag)

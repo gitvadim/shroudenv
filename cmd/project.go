@@ -8,6 +8,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	projectProjFlag string
+)
+
 var projectCmd = &cobra.Command{
 	Use:   "project",
 	Short: "Manage projects",
@@ -19,11 +23,11 @@ var projectCmd = &cobra.Command{
 }
 
 var projectCreateCmd = &cobra.Command{
-	Use:   "create <name>",
+	Use:   "create -p <project>",
 	Short: "Create a new project",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		projectName := args[0]
+		projectName := projectProjFlag
 
 		database, path, _, lock, err := LoadDBAndKeyExclusive()
 		if err != nil {
@@ -49,6 +53,7 @@ var projectCreateCmd = &cobra.Command{
 var projectListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all projects",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return listProjects()
 	},
@@ -74,7 +79,12 @@ func listProjects() error {
 }
 
 func init() {
+	projectCmd.PersistentFlags().StringVarP(&projectProjFlag, "project", "p", "", "Project name")
+
 	projectCmd.AddCommand(projectCreateCmd)
 	projectCmd.AddCommand(projectListCmd)
+
+	_ = projectCreateCmd.MarkFlagRequired("project")
+
 	RootCmd.AddCommand(projectCmd)
 }

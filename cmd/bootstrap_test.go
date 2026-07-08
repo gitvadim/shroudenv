@@ -6,18 +6,39 @@ import (
 	"testing"
 
 	"shroudenv/pkg/keyring"
+	"shroudenv/pkg/vault"
 )
 
 func init() {
 	keyring.MockInit()
 }
 
+func mockStdin(t *testing.T, content string) func() {
+	oldStdin := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create pipe: %v", err)
+	}
+	os.Stdin = r
+	go func() {
+		defer w.Close()
+		_, _ = w.Write([]byte(content))
+	}()
+	return func() {
+		os.Stdin = oldStdin
+		r.Close()
+	}
+}
+
 func TestBootstrapCmd_NoConfigFile(t *testing.T) {
-	os.Setenv("SHROUDENV_MASTER_KEY", strings.Repeat("a", 64))
-	defer os.Unsetenv("SHROUDENV_MASTER_KEY")
+	// Set mock master key in mocked keyring to bypass LoadDBAndKey check
+	testKey := make([]byte, 32)
+	if err := vault.SetMasterKey(testKey); err != nil {
+		t.Fatalf("failed to set master key in mock keyring: %v", err)
+	}
 
 	cmd := RootCmd
-	cmd.SetArgs([]string{"bootstrap", "-f", "non_existent_file_xyz.yaml", "--non-interactive"})
+	cmd.SetArgs([]string{"bootstrap", "-f", "non_existent_file_xyz.yaml"})
 	err := cmd.Execute()
 	if err == nil {
 		t.Error("expected error for non-existent config file, got nil")
@@ -27,8 +48,8 @@ func TestBootstrapCmd_NoConfigFile(t *testing.T) {
 	}
 }
 
-func TestBootstrapCmd_SuccessNonInteractive(t *testing.T) {
-	// 1. Setup temp database path and mock master key env var (N-01: prevents testutil from compiling to production)
+func TestBootstrapCmd_SuccessInteractive(t *testing.T) {
+	// 1. Setup temp database path (N-01: prevents testutil from compiling to production)
 	tmpDB, err := os.CreateTemp("", "shroudenv-test-db-*.json")
 	if err != nil {
 		t.Fatalf("failed to create temp db: %v", err)
@@ -39,9 +60,7 @@ func TestBootstrapCmd_SuccessNonInteractive(t *testing.T) {
 	defer os.Remove(tmpDBPath)
 
 	os.Setenv("SHROUDENV_DB_PATH", tmpDBPath)
-	os.Setenv("SHROUDENV_MASTER_KEY", strings.Repeat("a", 64)) // 64 char hex string
 	defer os.Unsetenv("SHROUDENV_DB_PATH")
-	defer os.Unsetenv("SHROUDENV_MASTER_KEY")
 
 	// 2. Initialize the database salt and files
 	initCmd := RootCmd
@@ -81,9 +100,12 @@ variables:
 	os.Setenv("CLI_TEST_HOST", "my-test-host")
 	defer os.Unsetenv("CLI_TEST_HOST")
 
-	// 4. Run bootstrap in non-interactive mode
+	// 4. Run bootstrap with mocked stdin (two enters: one for PORT, one for HOST fallback)
+	cleanup := mockStdin(t, "\n\n")
+	defer cleanup()
+
 	bootstrapCmd := RootCmd
-	bootstrapCmd.SetArgs([]string{"bootstrap", "-f", tmpYaml.Name(), "--non-interactive"})
+	bootstrapCmd.SetArgs([]string{"bootstrap", "-f", tmpYaml.Name()})
 	if err := bootstrapCmd.Execute(); err != nil {
 		t.Fatalf("bootstrap command failed: %v", err)
 	}
@@ -121,7 +143,7 @@ variables:
 }
 
 func TestBootstrapCmd_EnvironmentAlreadyExistsGuardrail(t *testing.T) {
-	// 1. Setup temp database and master key (N-01: prevents testutil from compiling to production)
+	// 1. Setup temp database
 	tmpDB, err := os.CreateTemp("", "shroudenv-test-db-*.json")
 	if err != nil {
 		t.Fatalf("failed to create temp db: %v", err)
@@ -132,9 +154,7 @@ func TestBootstrapCmd_EnvironmentAlreadyExistsGuardrail(t *testing.T) {
 	defer os.Remove(tmpDBPath)
 
 	os.Setenv("SHROUDENV_DB_PATH", tmpDBPath)
-	os.Setenv("SHROUDENV_MASTER_KEY", strings.Repeat("a", 64))
 	defer os.Unsetenv("SHROUDENV_DB_PATH")
-	defer os.Unsetenv("SHROUDENV_MASTER_KEY")
 
 	// 2. Initialize db
 	initCmd := RootCmd
@@ -163,16 +183,21 @@ variables:
 	tmpYaml.Close()
 
 	// 4. Run first bootstrap command (should succeed)
+	cleanup1 := mockStdin(t, "\n")
 	bootstrapCmd1 := RootCmd
-	bootstrapCmd1.SetArgs([]string{"bootstrap", "-f", tmpYaml.Name(), "-e", "staging", "--non-interactive"})
-	if err := bootstrapCmd1.Execute(); err != nil {
+	bootstrapCmd1.SetArgs([]string{"bootstrap", "-f", tmpYaml.Name(), "-e", "staging"})
+	err = bootstrapCmd1.Execute()
+	cleanup1()
+	if err != nil {
 		t.Fatalf("first bootstrap execution failed: %v", err)
 	}
 
 	// 5. Run second bootstrap command (should fail because environment staging already exists)
+	cleanup2 := mockStdin(t, "\n")
 	bootstrapCmd2 := RootCmd
-	bootstrapCmd2.SetArgs([]string{"bootstrap", "-f", tmpYaml.Name(), "-e", "staging", "--non-interactive"})
+	bootstrapCmd2.SetArgs([]string{"bootstrap", "-f", tmpYaml.Name(), "-e", "staging"})
 	err = bootstrapCmd2.Execute()
+	cleanup2()
 	if err == nil {
 		t.Fatal("expected second bootstrap execution to fail, but it succeeded")
 	}
